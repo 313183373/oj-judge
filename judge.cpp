@@ -15,6 +15,7 @@
 #include <signal.h>
 #include <sys/reg.h>
 #include <sys/user.h>
+#include <sys/syscall.h>
 #include <string>
 #include <fstream>
 #include <sstream>
@@ -47,7 +48,7 @@ using bsoncxx::builder::stream::open_document;
 #define COMPILE_TIME_LIMIT 5    //s
 #define COMPILE_MEM_LIMIT 128   //MB
 
-#define OUTPUT_FILE_SIZE_LIMIT 10   //MB
+#define FILE_SIZE_LIMIT 10   //MB
 
 #define AC 0
 #define TLE 1
@@ -96,14 +97,26 @@ void saveCodeToFile(std::string, std::string);
 
 void saveToFile(std::string, std::string);
 
-void updateByID(mongocxx::collection, std::string, std::string, std::string);
+void updateStatus(mongocxx::collection, std::string, std::string, std::string);
 
 void updateStatusAndMessage(mongocxx::collection, std::string, std::string, std::string);
 
 void updateStatusAndMemAndTimeAndMessage(mongocxx::collection collection, std::string id, std::string status,
                                          long mem, long time, std::string message);
 
+void initAllowSystemCall(std::string language);
+
+bool isAllowSystemCall(int systemCallId);
+
 const std::string RESULT[] = {"AC", "TLE", "MLE", "WA", "RE", "CE", "SYSTEM_ERROR", "INVALID_PROBLEM_ID", "OLE"};
+const char *cppCompileArugments[] = {"g++", "main.cpp", "-o", "main", "-lm", "-DONLINE_JUDGE", "-w", "-O2", "-fmax-errors=3", "-std=c++14", "-static", NULL};
+const char *cCompileArugments[] = {"gcc", "main.c", "-o", "main", "-lm", "-DONLINE_JUDGE", "-w", "-O2", "-fmax-errors=3", "-std=c11", "-static", NULL};
+
+const int ALLOW_SYS_CALL_C[] = {0,1,2,3,4,5,8,9,11,12,20,21,59,63,89,158,231,240, SYS_time, SYS_read, SYS_uname, SYS_write
+	, SYS_open, SYS_close, SYS_execve, SYS_access, SYS_brk, SYS_munmap, SYS_mprotect, SYS_mmap, SYS_fstat
+	, SYS_set_thread_area, 252, SYS_arch_prctl, 0 };
+
+bool allowSystemCall[512];
 
 std::string getUtf8ValueFromDocument(bsoncxx::document::view view, std::string key) {
     bsoncxx::document::element value = view[key];
@@ -255,17 +268,19 @@ int compile(std::string language, long &compileMemoryUsed, long &compileTimeUsed
         perror("fork");
         return -1;
     } else if (pid == 0) {      //child
-        if (language == "cpp") {
+        if (language == "cpp" || language == "c") {
             struct rlimit compileTimeLimit, compileMemLimit;
             setLimit(RLIMIT_AS, COMPILE_MEM_LIMIT * MB);
             setLimit(RLIMIT_CPU, COMPILE_TIME_LIMIT);
             freopen(COMPILE_LOG, "w", stdout);
             freopen(COMPILE_ERROR_LOG, "w", stderr);
-            const char *argv[] = {"g++", "main.cpp", "-o", "main", "-lm", "-w", "-O2", "-fmax-errors=3", "-std=c++14",
-                                  "-static", NULL};
             alarm(0);
             alarm(COMPILE_TIME_LIMIT);
-            execvp(argv[0], (char *const *) argv);
+            if(language == "cpp") {
+                execvp(cppCompileArugments[0], (char *const *) cppCompileArugments);
+            } else {
+                execvp(cCompileArugments[0], (char *const *) cCompileArugments);
+            }
             // if execvp run succeed, the child process will quit, if not,the child process will continue to run below code
             return -1;      //never reach this line
         }
@@ -284,14 +299,16 @@ int compile(std::string language, long &compileMemoryUsed, long &compileTimeUsed
 }
 
 int run(std::string language, pid_t pid, int timeLimitValue, int memLimitValue, int &result) {
-    if (language == "cpp") {
+    if (language == "cpp" || language == "c") {
         freopen(DATA_IN, "r", stdin);
         freopen(DATA_OUT, "w", stdout);
         freopen(ERR_OUT, "w", stderr);
         ptrace(PTRACE_TRACEME, NULL, NULL, NULL);
         setLimit(RLIMIT_CPU, timeLimitValue / 1000 + 1); //seconds
-        setLimit(RLIMIT_AS, memLimitValue * KB);    //the rlimit_as unit is byte
-        setLimit(RLIMIT_FSIZE, OUTPUT_FILE_SIZE_LIMIT * MB);    //the rlimit_as unit is byte
+        setLimit(RLIMIT_AS, (memLimitValue + 1024 * 10) * KB);    //the rlimit_as unit is byte
+        setLimit(RLIMIT_FSIZE, FILE_SIZE_LIMIT * MB);    //the rlimit_as unit is byte
+        setLimit(RLIMIT_STACK, MB * 8);    // 8MB stack size
+        setLimit(RLIMIT_NPROC, 1);  // max number of process
         // maybe also need to add stack size limit and max process limit
         const char *argv[] = {"./main", "./main", nullptr};
         alarm(0);
@@ -320,7 +337,7 @@ std::string readFileToString(std::string file) {
 
 void monitorChildProcess(std::string language, pid_t pid, int &result, long &memUsed, long &memUsed2, int &timeUsed,
                          long &physicalMemUsed,
-                         int timeLimit, int memLimit, std::string &runtimeErrorMessage) {
+                         int timeLimit, int memLimit, std::string expectedOutput, std::string &runtimeErrorMessage) {
     int status;
     rusage usage;
     bool isEnterSystemCall = true;
@@ -434,6 +451,11 @@ void monitorChildProcess(std::string language, pid_t pid, int &result, long &mem
                       << std::endl;
         }
         isEnterSystemCall = !isEnterSystemCall;
+        if(!isAllowSystemCall(SYSTEM_CALL(regs))) {
+            result = RE;
+            runtimeErrorMessage = "not allowed operation";
+            kill(pid, SIGKILL);
+        }
         if (timeUsed > timeLimit) {
             kill(pid, SIGKILL);
         }
@@ -441,7 +463,7 @@ void monitorChildProcess(std::string language, pid_t pid, int &result, long &mem
             result = MLE;
             kill(pid, SIGKILL);
         }
-        if (getFileSize(DATA_OUT) > OUTPUT_FILE_SIZE_LIMIT * MB) {
+        if (getFileSize(DATA_OUT) > expectedOutput.length() + KB) {
             result = OLE;
             kill(pid, SIGKILL);
         }
@@ -492,7 +514,7 @@ int main(int argc, char *argv[]) {
     std::string compileErrorMessage = "";
     std::string runtimeErrorMessage = "";
     int result = AC;
-    updateByID(submitCollection, submitID, "status", "compiling");
+    updateStatus(submitCollection, submitID, "status", "compiling");
     int status = compile(language, compileMemoryUsed, compileTimeUsed, result);
     if (!WIFEXITED(status) ||
         !isFileEmpty(COMPILE_ERROR_LOG)) {     //not exit normally or compile error file is not empty
@@ -503,12 +525,12 @@ int main(int argc, char *argv[]) {
                         alarm(0);
                     case SIGXCPU:
                         std::cout << "compile time exceeded" << std::endl;
-                        compileErrorMessage = "compile time exceeded";
+                        compileErrorMessage = "Compile Time Exceeded";
                         break;
                     default:
                         std::cout << "unknown signal " << WTERMSIG(status) << " exit code is: " << WEXITSTATUS(status)
                                   << std::endl;
-                        compileErrorMessage = "exit code is " + WEXITSTATUS(status);
+                        compileErrorMessage = "Compile exit, exit code is " + WEXITSTATUS(status);
                         break;
                 }
             } else {
@@ -527,7 +549,7 @@ int main(int argc, char *argv[]) {
         return 0;
     } else if (status == -1) {
         // if the execvp function in compile function run error, then return code is -1;
-        compileErrorMessage = "compile fork error";
+        compileErrorMessage = "Compile fork error";
         updateStatusAndMessage(submitCollection, submitID, RESULT[SYSTEM_ERROR], compileErrorMessage);
         result = SYSTEM_ERROR;
         std::cout << "server error" << std::endl;
@@ -537,7 +559,8 @@ int main(int argc, char *argv[]) {
                   << " ms" << std::endl;
         std::cout << "compile success, and start judging" << std::endl
                   << "===============================================" << std::endl;
-        updateByID(submitCollection, submitID, "status", "running");
+        updateStatus(submitCollection, submitID, "status", "running");
+        initAllowSystemCall(language);  // init all allowed system call in c and c++;
         int timeLimitValue = getInt32ValueFromDocument(problemView, "timeLimit");
         int memLimitValue = getInt32ValueFromDocument(problemView, "memLimit");
         if (timeLimitValue == -1 || memLimitValue == -1) {
@@ -589,7 +612,7 @@ int main(int argc, char *argv[]) {
                 run(language, pid, timeLimitValue, memLimitValue, result);
             } else {    // parent
                 monitorChildProcess(language, pid, result, memUsed, memUsed2, timeUsed, physicalMemUsed,
-                                    timeLimitValue, memLimitValue, runtimeErrorMessage);
+                                    timeLimitValue, memLimitValue, expectedOutput, runtimeErrorMessage);
                 gettimeofday(&endTime, NULL);
                 int realTime = endTime.tv_sec * 1000 + endTime.tv_usec / 1000 - beginTime.tv_sec * 1000 -
                                beginTime.tv_usec / 1000;
@@ -662,7 +685,20 @@ void saveCodeToFile(std::string language, std::string code) {
     }
 }
 
-void updateByID(mongocxx::collection collection, std::string id, std::string key, std::string value) {
+void initAllowSystemCall(std::string language) {
+    memset(allowSystemCall, false ,sizeof(allowSystemCall));
+    if(language == "cpp" || language == "c") {
+        for(int i = 0; i == 0 || ALLOW_SYS_CALL_C[i]; i++) {
+            allowSystemCall[ALLOW_SYS_CALL_C[i]] = true;
+        }
+    }
+}
+
+bool isAllowSystemCall(int systemCallId) {
+    return allowSystemCall[systemCallId];
+}
+
+void updateStatus(mongocxx::collection collection, std::string id, std::string key, std::string value) {
     collection.update_one(document{} << "_id" << bsoncxx::oid(id) << finalize,
                           document{} << "$set" << open_document <<
                                      key << value << close_document
