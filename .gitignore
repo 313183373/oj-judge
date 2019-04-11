@@ -1,0 +1,11 @@
+.vscode
+compile_error.log
+compile.log
+datain.txt
+dataout.txt
+errout.txt
+main
+main.cpp
+test
+test.c
+test.cpp
