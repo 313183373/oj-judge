@@ -46,7 +46,7 @@ using bsoncxx::builder::stream::open_document;
 #define C_CODE_FILE "main.c"
 
 #define COMPILE_TIME_LIMIT 5    //s
-#define COMPILE_MEM_LIMIT 128   //MB
+#define COMPILE_MEM_LIMIT 4096   //MB
 
 #define FILE_SIZE_LIMIT 10   //MB
 
@@ -112,7 +112,7 @@ const std::string RESULT[] = {"AC", "TLE", "MLE", "WA", "RE", "CE", "SYSTEM_ERRO
 const char *cppCompileArugments[] = {"g++", "main.cpp", "-o", "main", "-lm", "-DONLINE_JUDGE", "-w", "-O2", "-fmax-errors=3", "-std=c++14", "-static", NULL};
 const char *cCompileArugments[] = {"gcc", "main.c", "-o", "main", "-lm", "-DONLINE_JUDGE", "-w", "-O2", "-fmax-errors=3", "-std=c11", "-static", NULL};
 
-const int ALLOW_SYS_CALL_C[] = {0,1,2,3,4,5,8,9,11,12,20,21,59,63,89,158,231,240, SYS_time, SYS_read, SYS_uname, SYS_write
+const int ALLOW_SYS_CALL_C[256] = {0,1,2,3,4,5,8,9,11,12,20,21,59,63,89,158,231,240, SYS_time, SYS_read, SYS_uname, SYS_write
 	, SYS_open, SYS_close, SYS_execve, SYS_access, SYS_brk, SYS_munmap, SYS_mprotect, SYS_mmap, SYS_fstat
 	, SYS_set_thread_area, 252, SYS_arch_prctl, 0 };
 
@@ -451,9 +451,10 @@ void monitorChildProcess(std::string language, pid_t pid, int &result, long &mem
                       << std::endl;
         }
         isEnterSystemCall = !isEnterSystemCall;
-        if(!isAllowSystemCall(SYSTEM_CALL(regs))) {
+        int syscallId = SYSTEM_CALL(regs);
+        if(!isAllowSystemCall(syscallId)) {
             result = RE;
-            runtimeErrorMessage = "not allowed operation";
+            runtimeErrorMessage = "not allowed system call, id: " + syscallId;
             kill(pid, SIGKILL);
         }
         if (timeUsed > timeLimit) {
@@ -695,7 +696,7 @@ void initAllowSystemCall(std::string language) {
 }
 
 bool isAllowSystemCall(int systemCallId) {
-    return allowSystemCall[systemCallId];
+    return allowSystemCall[systemCallId] == true;
 }
 
 void updateStatus(mongocxx::collection collection, std::string id, std::string key, std::string value) {
