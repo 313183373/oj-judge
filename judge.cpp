@@ -46,7 +46,7 @@ using bsoncxx::builder::stream::open_document;
 #define C_CODE_FILE "main.c"
 
 #define COMPILE_TIME_LIMIT 5    //s
-#define COMPILE_MEM_LIMIT 4096   //MB
+#define COMPILE_MEM_LIMIT 512   //MB
 
 #define FILE_SIZE_LIMIT 10   //MB
 
@@ -454,7 +454,9 @@ void monitorChildProcess(std::string language, pid_t pid, int &result, long &mem
         int syscallId = SYSTEM_CALL(regs);
         if(!isAllowSystemCall(syscallId)) {
             result = RE;
-            runtimeErrorMessage = "not allowed system call, id: " + syscallId;
+            std::ostringstream os;
+            os << "not allowed system call, id: " << syscallId;
+            runtimeErrorMessage = os.str();
             kill(pid, SIGKILL);
         }
         if (timeUsed > timeLimit) {
@@ -531,7 +533,9 @@ int main(int argc, char *argv[]) {
                     default:
                         std::cout << "unknown signal " << WTERMSIG(status) << " exit code is: " << WEXITSTATUS(status)
                                   << std::endl;
-                        compileErrorMessage = "Compile exit, exit code is " + WEXITSTATUS(status);
+                        std::ostringstream os;
+                        os << "Compile exit, signal: " << WTERMSIG(status);
+                        compileErrorMessage = os.str();
                         break;
                 }
             } else {
@@ -624,8 +628,8 @@ int main(int argc, char *argv[]) {
                     case RE: {
                         if (!isFileEmpty(ERR_OUT)) {
                             runtimeErrorMessage = readFileToString(ERR_OUT);
-                            std::cout << runtimeErrorMessage << std::endl;
                         }
+                        std::cout << runtimeErrorMessage << std::endl;
                         break;
                     }
                     case AC: {
