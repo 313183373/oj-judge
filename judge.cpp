@@ -32,7 +32,7 @@ using bsoncxx::builder::stream::open_document;
 #define DOCKER
 
 #ifdef DOCKER
-#define MONGO_URI "mongodb://192.168.0.1:27017"    //use host.docker.internal to connect to the mongodb server on the host computer
+#define MONGO_URI "mongodb://db:27017"    //use host.docker.internal to connect to the mongodb server on the host computer(only in macos)
 #else
 #define MONGO_URI "mongodb://localhost:27017"
 #endif
