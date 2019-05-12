@@ -453,11 +453,13 @@ void monitorChildProcess(std::string language, pid_t pid, int &result, long &mem
         isEnterSystemCall = !isEnterSystemCall;
         int syscallId = SYSTEM_CALL(regs);
         if(!isAllowSystemCall(syscallId)) {
-            result = RE;
-            std::ostringstream os;
-            os << "not allowed system call, id: " << syscallId;
-            runtimeErrorMessage = os.str();
-            kill(pid, SIGKILL);
+            if(result == AC) {
+                result = RE;
+                std::ostringstream os;
+                os << "not allowed system call, id: " << syscallId;
+                runtimeErrorMessage = os.str();
+                kill(pid, SIGKILL);
+            }
         }
         if (timeUsed > timeLimit) {
             kill(pid, SIGKILL);
